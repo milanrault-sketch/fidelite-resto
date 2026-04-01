@@ -1,186 +1,203 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+import { useEffect, useState } from 'react'
+import Head from 'next/head'
+import { supabase } from '../lib/supabase'
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+interface Client {
+  id: string
+  prenom: string
+  telephone: string
+  points: number
 }
 
-:root {
-  --green: #1D9E75;
-  --green-dark: #0F6E56;
-  --green-light: #E1F5EE;
-  --red-light: #FCEBEB;
-  --red: #A32D2D;
-  --bg: #F7F7F5;
-  --card: #FFFFFF;
-  --border: rgba(0,0,0,0.08);
-  --text: #1a1a1a;
-  --text-muted: #888;
-  --radius: 16px;
-  --radius-sm: 10px;
+interface Config {
+  id?: string
+  nom: string
+  points_par_euro: number
+  points_par_reduction: number
 }
 
-html, body {
-  font-family: 'DM Sans', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
+export default function Commercant() {
+  const [activeTab, setActiveTab] = useState<'scan' | 'clients' | 'config'>('scan')
+  const [telephone, setTelephone] = useState('')
+  const [foundClient, setFoundClient] = useState<Client | null>(null)
+  const [montant, setMontant] = useState('15')
+  const [redeemPts, setRedeemPts] = useState('100')
+  const [feedback, setFeedback] = useState<{ msg: string, type: 'success' | 'error' } | null>(null)
+  const [clients, setClients] = useState<Client[]>([])
+  const [config, setConfig] = useState<Config>({ nom: 'Mon Restaurant', points_par_euro: 1, points_par_reduction: 100 })
+  const [pinOk, setPinOk] = useState(false)
+  const [pin, setPin] = useState('')
+  const PIN = '1234'
+
+  useEffect(() => { loadConfig(); loadClients() }, [])
+
+  async function loadConfig() {
+    const { data } = await supabase.from('restaurants').select('*').limit(1).single()
+    if (data) setConfig(data)
+  }
+
+  async function loadClients() {
+    const { data } = await supabase.from('clients').select('*').order('points', { ascending: false })
+    if (data) setClients(data)
+  }
+
+  function showFeedback(msg: string, type: 'success' | 'error') {
+    setFeedback({ msg, type })
+    setTimeout(() => setFeedback(null), 3000)
+  }
+
+  async function lookupClient() {
+    setFoundClient(null)
+    const tel = telephone.replace(/\s/g, '')
+    const { data } = await supabase.from('clients').select('*').eq('telephone', tel).single()
+    if (data) setFoundClient(data)
+    else showFeedback('Aucun client trouvé avec ce numéro.', 'error')
+  }
+
+  async function addPoints() {
+    if (!foundClient) { showFeedback('Cherche d\'abord un client.', 'error'); return }
+    const amt = parseFloat(montant)
+    const pts = Math.round(amt * config.points_par_euro)
+    const newPoints = foundClient.points + pts
+    await supabase.from('clients').update({ points: newPoints }).eq('id', foundClient.id)
+    await supabase.from('transactions').insert({ client_id: foundClient.id, type: 'gain', points: pts, montant: amt })
+    setFoundClient({ ...foundClient, points: newPoints })
+    showFeedback(`+${pts} points ajoutés à ${foundClient.prenom} !`, 'success')
+    loadClients()
+  }
+
+  async function redeemPoints() {
+    if (!foundClient) { showFeedback('Cherche d\'abord un client.', 'error'); return }
+    const pts = parseInt(redeemPts)
+    if (foundClient.points < pts) { showFeedback('Points insuffisants.', 'error'); return }
+    const reduction = (pts / config.points_par_reduction).toFixed(2)
+    const newPoints = foundClient.points - pts
+    await supabase.from('clients').update({ points: newPoints }).eq('id', foundClient.id)
+    await supabase.from('transactions').insert({ client_id: foundClient.id, type: 'reduction', points: pts, montant: parseFloat(reduction) })
+    setFoundClient({ ...foundClient, points: newPoints })
+    showFeedback(`Réduction de ${reduction}€ appliquée !`, 'success')
+    loadClients()
+  }
+
+  async function saveConfig() {
+    if (config.id) {
+      await supabase.from('restaurants').update({ nom: config.nom, points_par_euro: config.points_par_euro, points_par_reduction: config.points_par_reduction }).eq('id', config.id)
+    } else {
+      const { data } = await supabase.from('restaurants').insert({ nom: config.nom, points_par_euro: config.points_par_euro, points_par_reduction: config.points_par_reduction }).select().single()
+      if (data) setConfig(data)
+    }
+    showFeedback('Configuration sauvegardée !', 'success')
+  }
+
+  function getLevel(pts: number) {
+    if (pts < 200) return { label: 'Bronze', cls: 'badge-bronze' }
+    if (pts < 500) return { label: 'Argent', cls: 'badge-argent' }
+    return { label: 'Or', cls: 'badge-or' }
+  }
+
+  if (!pinOk) return (
+    <div className="app" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: 24 }}>
+      <div style={{ fontSize: 32, marginBottom: 16 }}>🔐</div>
+      <div style={{ fontSize: 18, fontWeight: 500, marginBottom: 8 }}>Espace commerçant</div>
+      <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 24 }}>Entre ton code PIN</div>
+      <input className="input" type="password" placeholder="PIN" value={pin} onChange={e => setPin(e.target.value)} style={{ maxWidth: 200, textAlign: 'center', marginBottom: 12 }} />
+      <button className="btn btn-primary" style={{ maxWidth: 200 }} onClick={() => { if (pin === PIN) setPinOk(true); else showFeedback('PIN incorrect', 'error') }}>Accéder</button>
+      {feedback && <div className={`feedback ${feedback.type}`} style={{ marginTop: 12 }}>{feedback.msg}</div>}
+    </div>
+  )
+
+  return (
+    <>
+      <Head>
+        <title>Commerçant — {config.nom}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </Head>
+      <div className="app">
+        <nav className="nav">
+          <button className={`nav-tab ${activeTab === 'scan' ? 'active' : ''}`} onClick={() => setActiveTab('scan')}>Scanner</button>
+          <button className={`nav-tab ${activeTab === 'clients' ? 'active' : ''}`} onClick={() => { setActiveTab('clients'); loadClients() }}>Clients</button>
+          <button className={`nav-tab ${activeTab === 'config' ? 'active' : ''}`} onClick={() => setActiveTab('config')}>Config</button>
+        </nav>
+
+        {activeTab === 'scan' && (
+          <div className="screen active">
+            <div className="section">
+              <div className="section-title">Trouver un client</div>
+              <div className="input-row">
+                <input className="input" type="tel" placeholder="Numéro de téléphone" value={telephone} onChange={e => setTelephone(e.target.value)} />
+                <button className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }} onClick={lookupClient}>Chercher</button>
+              </div>
+              {feedback && <div className={`feedback ${feedback.type}`}>{feedback.msg}</div>}
+              {foundClient && (
+                <div className="customer-card">
+                  <div className="customer-name">{foundClient.prenom}</div>
+                  <div className="customer-pts">{foundClient.points} points · {foundClient.telephone}</div>
+                  <span className={`badge ${getLevel(foundClient.points).cls}`}>{getLevel(foundClient.points).label}</span>
+                </div>
+              )}
+              <div className="input-label">
+                <span>Montant :</span>
+                <input className="input-sm" type="number" value={montant} onChange={e => setMontant(e.target.value)} />
+                <span>€</span>
+                <span style={{ color: 'var(--green)', fontWeight: 500, fontSize: 13 }}>= {Math.round(parseFloat(montant || '0') * config.points_par_euro)} pts</span>
+              </div>
+              <button className="btn btn-secondary" onClick={addPoints} style={{ marginBottom: 10 }}>+ Ajouter les points</button>
+              <div className="input-label" style={{ marginTop: 8 }}>
+                <span>Points à utiliser :</span>
+                <input className="input-sm" type="number" value={redeemPts} onChange={e => setRedeemPts(e.target.value)} />
+                <span style={{ color: 'var(--red)', fontWeight: 500, fontSize: 13 }}>= {(parseInt(redeemPts || '0') / config.points_par_reduction).toFixed(2)}€</span>
+              </div>
+              <button className="btn btn-danger" onClick={redeemPoints}>- Utiliser des points</button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'clients' && (
+          <div className="screen active">
+            <div className="section">
+              <div className="section-title">Tous les clients ({clients.length})</div>
+              {clients.map(c => (
+                <div className="client-row" key={c.id}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{c.prenom}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{c.telephone} · {getLevel(c.points).label}</div>
+                  </div>
+                  <span className="client-pts">{c.points} pts</span>
+                </div>
+              ))}
+              {clients.length === 0 && <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0' }}>Aucun client encore inscrit</div>}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'config' && (
+          <div className="screen active">
+            <div className="section">
+              <div className="section-title">Programme de fidélité</div>
+              <div className="config-row">
+                <span className="config-label">Nom du restaurant</span>
+                <input className="input-sm" type="text" value={config.nom} onChange={e => setConfig({ ...config, nom: e.target.value })} style={{ width: 130, textAlign: 'left', padding: '0 10px' }} />
+              </div>
+              <div className="config-row">
+                <span className="config-label">Points par euro</span>
+                <input className="input-sm" type="number" value={config.points_par_euro} onChange={e => setConfig({ ...config, points_par_euro: parseFloat(e.target.value) })} />
+              </div>
+              <div className="config-row">
+                <span className="config-label">Points pour 1€ de réduction</span>
+                <input className="input-sm" type="number" value={config.points_par_reduction} onChange={e => setConfig({ ...config, points_par_reduction: parseInt(e.target.value) })} />
+              </div>
+              <button className="btn btn-primary" onClick={saveConfig} style={{ marginTop: 16 }}>Enregistrer</button>
+              {feedback && <div className={`feedback ${feedback.type}`} style={{ marginTop: 10 }}>{feedback.msg}</div>}
+            </div>
+            <div className="section">
+              <div className="section-title">Lien d'inscription clients</div>
+              <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 14px', fontSize: 12, fontFamily: 'DM Mono', wordBreak: 'break-all', color: 'var(--green-dark)' }}>
+                {typeof window !== 'undefined' ? `${window.location.origin}/` : 'fidelite-resto.vercel.app/'}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  )
 }
-
-.app {
-  max-width: 430px;
-  margin: 0 auto;
-  min-height: 100vh;
-  background: var(--bg);
-}
-
-/* NAV */
-.nav {
-  display: flex;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-.nav-tab {
-  flex: 1;
-  padding: 15px 8px;
-  font-size: 13px;
-  font-weight: 500;
-  text-align: center;
-  cursor: pointer;
-  color: var(--text-muted);
-  border: none;
-  background: none;
-  font-family: 'DM Sans', sans-serif;
-  transition: color .2s;
-  border-bottom: 2px solid transparent;
-}
-.nav-tab.active {
-  color: var(--green);
-  border-bottom-color: var(--green);
-}
-
-/* SCREENS */
-.screen { display: none; padding: 16px; }
-.screen.active { display: block; }
-
-/* LOYALTY CARD */
-.loyalty-card {
-  background: linear-gradient(135deg, #1D9E75 0%, #085041 100%);
-  border-radius: 20px;
-  padding: 26px;
-  color: #fff;
-  position: relative;
-  overflow: hidden;
-  margin-bottom: 14px;
-  box-shadow: 0 8px 32px rgba(29,158,117,0.3);
-}
-.loyalty-card::before {
-  content: '';
-  position: absolute;
-  right: -40px; top: -40px;
-  width: 160px; height: 160px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.07);
-}
-.loyalty-card::after {
-  content: '';
-  position: absolute;
-  right: 30px; bottom: -50px;
-  width: 110px; height: 110px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.05);
-}
-.card-brand { font-size: 11px; font-weight: 500; opacity: 0.7; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 6px; }
-.card-name { font-size: 21px; font-weight: 600; margin-bottom: 24px; }
-.card-bottom { display: flex; align-items: flex-end; justify-content: space-between; }
-.card-pts { font-size: 46px; font-weight: 300; line-height: 1; }
-.card-pts-label { font-size: 12px; opacity: 0.7; margin-left: 4px; margin-bottom: 8px; }
-.card-id { font-family: 'DM Mono', monospace; font-size: 11px; opacity: 0.55; }
-
-/* BUTTONS */
-.btn { width: 100%; padding: 13px; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500; cursor: pointer; border: none; font-family: 'DM Sans', sans-serif; transition: opacity .15s, transform .1s; }
-.btn:active { transform: scale(0.98); }
-.btn-primary { background: var(--green); color: #fff; }
-.btn-secondary { background: var(--green-light); color: var(--green-dark); }
-.btn-danger { background: var(--red-light); color: var(--red); }
-.btn-black { background: #000; color: #fff; display: flex; align-items: center; justify-content: center; gap: 8px; }
-
-/* CARD SECTIONS */
-.section {
-  background: var(--card);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  padding: 16px;
-  margin-bottom: 12px;
-}
-.section-title { font-size: 13px; font-weight: 500; color: var(--text-muted); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
-
-/* PROGRESS */
-.progress-bar { height: 6px; background: #eee; border-radius: 99px; overflow: hidden; margin: 10px 0 8px; }
-.progress-fill { height: 100%; background: var(--green); border-radius: 99px; transition: width .5s ease; }
-
-/* QR */
-.qr-wrap { text-align: center; padding: 8px 0; }
-.qr-hint { font-size: 12px; color: var(--text-muted); margin-top: 10px; font-family: 'DM Mono', monospace; }
-.toggle-btn { font-size: 12px; color: var(--green); cursor: pointer; margin-top: 8px; display: inline-block; background: none; border: none; font-family: 'DM Sans', sans-serif; }
-
-/* HISTORY */
-.history-item { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--border); }
-.history-item:last-child { border-bottom: none; }
-.h-desc { font-size: 13px; }
-.h-date { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-.h-pts { font-size: 13px; font-weight: 500; }
-.pts-gain { color: var(--green); }
-.pts-use { color: var(--red); }
-
-/* STATS */
-.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; }
-.stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-value { font-size: 24px; font-weight: 500; }
-
-/* INPUTS */
-.input-row { display: flex; gap: 8px; margin-bottom: 10px; }
-.input { flex: 1; height: 42px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 14px; font-size: 14px; font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); outline: none; transition: border-color .2s; }
-.input:focus { border-color: var(--green); }
-.input-sm { width: 90px; height: 38px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 10px; font-size: 14px; text-align: center; font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); outline: none; }
-.input-label { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-
-/* FEEDBACK */
-.feedback { padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; margin-bottom: 10px; }
-.feedback.success { background: var(--green-light); color: var(--green-dark); }
-.feedback.error { background: var(--red-light); color: var(--red); }
-
-/* CUSTOMER CARD */
-.customer-card { background: var(--bg); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 12px; }
-.customer-name { font-size: 15px; font-weight: 500; }
-.customer-pts { font-size: 13px; color: var(--text-muted); }
-.badge { display: inline-block; font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 99px; margin-top: 4px; }
-.badge-bronze { background: #FFF0E0; color: #A0522D; }
-.badge-argent { background: #F0F0F0; color: #555; }
-.badge-or { background: #FFF8DC; color: #B8860B; }
-
-/* CLIENTS LIST */
-.client-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--border); }
-.client-row:last-child { border-bottom: none; }
-.client-pts { background: var(--green-light); color: var(--green-dark); font-size: 12px; font-weight: 500; padding: 4px 12px; border-radius: 99px; }
-
-/* CONFIG */
-.config-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
-.config-row:last-child { border-bottom: none; }
-.config-label { font-size: 14px; color: var(--text); }
-
-/* INSCRIPTION */
-.inscription-wrap { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 24px; }
-.inscription-logo { width: 60px; height: 60px; background: var(--green); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin-bottom: 24px; }
-.inscription-title { font-size: 26px; font-weight: 600; margin-bottom: 8px; }
-.inscription-sub { font-size: 15px; color: var(--text-muted); margin-bottom: 32px; line-height: 1.5; }
-.form-group { margin-bottom: 14px; }
-.form-label { font-size: 13px; font-weight: 500; color: var(--text-muted); margin-bottom: 6px; display: block; }
-.form-input { width: 100%; height: 48px; border: 1.5px solid var(--border); border-radius: var(--radius-sm); padding: 0 16px; font-size: 15px; font-family: 'DM Sans', sans-serif; background: var(--card); color: var(--text); outline: none; transition: border-color .2s; }
-.form-input:focus { border-color: var(--green); }
